@@ -1,6 +1,6 @@
-# NGINX Log Analyzer
+# ducklens
 
-A browser-based NGINX log analysis tool using DuckDB-WASM. Designed to help identify performance bottlenecks in web applications.
+ducklens is a browser-based NGINX log analysis tool using DuckDB-WASM. Designed to help identify performance bottlenecks in web applications.
 
 ## Features
 
