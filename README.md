@@ -36,7 +36,9 @@ npm run dev
 
 2. Access http://localhost:5173 in your browser
 
-3. Upload your NGINX log file (JSON format)
+3. Either:
+   - Upload your NGINX log file (JSON format), or
+   - Click "Load Demo Data" to see the tool in action with sample data
 
 ## Input File Format
 

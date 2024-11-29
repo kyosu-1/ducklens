@@ -61,6 +61,11 @@ export default function Index() {
   const { initializeDuckDB } = clientLoader();
   const [db, setDb] = useState<AsyncDuckDB | null>(null);
   const [conn, setConn] = useState<AsyncDuckDBConnection | null>(null);
+  const [statusCodeStats, setStatusCodeStats] = useState<StatusCodeAnalysis[]>([]);
+  const [tableSchema, setTableSchema] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [performanceAnalysis, setPerformanceAnalysis] = useState<PerformanceAnalysis[]>([]);
+  const [statusChartData, setStatusChartData] = useState<StatusChartData[]>([]);
 
   useEffect(() => {
     initializeDuckDB().then(({ db, conn }) => {
@@ -69,11 +74,110 @@ export default function Index() {
     });
   }, []);
 
-  const [statusCodeStats, setStatusCodeStats] = useState<StatusCodeAnalysis[]>([]);
-  const [tableSchema, setTableSchema] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [performanceAnalysis, setPerformanceAnalysis] = useState<PerformanceAnalysis[]>([]);
-  const [statusChartData, setStatusChartData] = useState<StatusChartData[]>([]);
+  const handleDemoData = async () => {
+    if (!conn || !db) {
+      alert("DBが初期化されていません");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // デモデータをフェッチ
+      const response = await fetch('/data/test.json');
+      const testData = await response.json();
+
+      // 以降は handleFileUpload と同じ処理を実行
+      await db.registerFileBuffer('demo.json', new TextEncoder().encode(JSON.stringify(testData)));
+
+      // 以降は handleFileUpload と同じ処理を実行
+      await conn.query(`DROP TABLE IF EXISTS logs`);
+      await conn.query(`CREATE TABLE logs AS SELECT * FROM read_json_auto('demo.json')`);
+
+      // 正規化ログのビューを作成
+      await conn.query(`
+        DROP VIEW IF EXISTS normalized_logs;
+        CREATE VIEW normalized_logs AS
+        WITH query_normalized AS (
+          SELECT 
+            *,
+            REGEXP_REPLACE(request, '([?&][^=]+)=[^&?]*', '\\1=:param', 'g') as with_normalized_params
+          FROM logs
+        )
+        SELECT 
+          *,
+          REGEXP_REPLACE(
+            REGEXP_REPLACE(
+              REGEXP_REPLACE(with_normalized_params, '/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(/|$)', '/:uuid\\1', 'g'),
+              '/[0-9]+(/|$)', 
+              '/:id\\1',
+              'g'
+            ),
+            '/[0-9]+([?&]|$)',
+            '/:id\\1',
+            'g'
+          ) AS normalized_request
+        FROM query_normalized
+      `);
+
+      // 以降の分析クエリを実行
+      const schema = await conn.query(`PRAGMA table_info('logs')`);
+      setTableSchema(schema.toArray());
+
+      const statusDistribution = await conn.query(`
+        SELECT 
+          normalized_request as request,
+          status,
+          COUNT(*) AS count
+        FROM normalized_logs
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+      `);
+      setStatusCodeStats(statusDistribution.toArray());
+
+      const requestAnalysis = await conn.query(`
+        SELECT 
+          normalized_request as request,
+          COUNT(*) as total_requests,
+          AVG(request_time) as avg_time,
+          MAX(request_time) as max_time,
+          MIN(request_time) as min_time,
+          PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY request_time) as p95_time,
+          PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY request_time) as p99_time,
+          SUM(request_time) as total_time,
+          ARRAY_AGG(request) FILTER (WHERE request != normalized_request) as original_patterns
+        FROM normalized_logs 
+        GROUP BY normalized_request 
+        ORDER BY total_time DESC
+        LIMIT 100
+      `);
+      setPerformanceAnalysis(requestAnalysis.toArray());
+
+      const statusChartAnalysis = await conn.query(`
+        WITH status_groups AS (
+          SELECT 
+            normalized_request as request,
+            CAST(COUNT(*) FILTER (WHERE status >= 200 AND status < 300) AS INTEGER) as success,
+            CAST(COUNT(*) FILTER (WHERE status >= 300 AND status < 400) AS INTEGER) as redirect,
+            CAST(COUNT(*) FILTER (WHERE status >= 400 AND status < 500) AS INTEGER) as client_error,
+            CAST(COUNT(*) FILTER (WHERE status >= 500) AS INTEGER) as server_error,
+            CAST(COUNT(*) AS INTEGER) as total
+          FROM normalized_logs
+          GROUP BY normalized_request
+          ORDER BY total DESC
+          LIMIT 10
+        )
+        SELECT *
+        FROM status_groups
+        WHERE total > 0
+      `);
+      setStatusChartData(statusChartAnalysis.toArray());
+    } catch (error) {
+      console.error("エラーが発生しました:", error);
+      alert("デモデータの読み込みに失敗しました。");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // ファイルアップロード処理
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -133,7 +237,7 @@ export default function Index() {
       const schema = await conn.query(`PRAGMA table_info('logs')`);
       setTableSchema(schema.toArray());
 
-      // ステータスコードの分布（ビューを使用）
+      // ステータスコードの分布（ビュー���使用）
       const statusDistribution = await conn.query(`
         SELECT 
           normalized_request as request,
@@ -195,13 +299,19 @@ export default function Index() {
   return (
     <div className="container mx-auto p-6">
       <h1 className="text-3xl font-bold text-center mb-6">NGINX Log Analyzer</h1>
-      <div className="flex justify-center mb-4">
+      <div className="flex justify-center gap-4 mb-4">
         <input
           type="file"
           accept=".json"
           onChange={handleFileUpload}
           className="border border-gray-300 rounded p-2"
         />
+        <button
+          onClick={handleDemoData}
+          className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
+        >
+          デモデータを読み込む
+        </button>
       </div>
       {loading && <p className="text-center text-blue-500">Loading...</p>}
       
