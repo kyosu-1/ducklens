@@ -1,40 +1,75 @@
-# Welcome to Remix!
+# NGINX Log Analyzer
 
-- 📖 [Remix docs](https://remix.run/docs)
+A browser-based NGINX log analysis tool using DuckDB-WASM. Designed to help identify performance bottlenecks in web applications.
 
-## Development
+## Features
 
-Run the dev server:
+- **Client-side Processing**: All analysis runs in the browser - no server required
+- **Fast Analysis**: Powered by DuckDB for high-performance log processing
+- **Path Normalization**: Automatically normalizes IDs, UUIDs, and query parameters to group similar requests
+- **Visual Analysis**: Graph visualization using Recharts
 
-```shellscript
+## Key Functions
+
+1. **Request Analysis**
+   - Total time and average response time per request
+   - P95, P99 percentile values
+   - Display of original paths before normalization
+
+2. **Status Code Analysis**
+   - Status code distribution by request path
+   - Visualization of Success/Redirect/Client Error/Server Error
+   - Error status highlighting
+
+3. **Automatic Path Normalization**
+   - Numeric IDs (`/users/123` → `/users/:id`)
+   - UUIDs (`/users/550e8400-e29b-41d4-a716-446655440000` → `/users/:uuid`)
+   - Query Parameters (`?page=1&size=20` → `?page=:param&size=:param`)
+
+## Usage
+
+1. Start the development server:
+```bash
+npm install
 npm run dev
 ```
 
-## Deployment
+2. Access http://localhost:5173 in your browser
 
-First, build your app for production:
+3. Upload your NGINX log file (JSON format)
 
-```sh
-npm run build
+## Input File Format
+
+Accepts JSON files in the following format:
+
+```json
+[
+  {
+    "timestamp": "2024-03-20T10:00:00+09:00",
+    "remote_addr": "192.168.1.100",
+    "request": "/api/user/1/profile",
+    "status": 200,
+    "request_time": 0.05,
+    "http_user_agent": "Mozilla/5.0"
+  },
+  ...
+]
 ```
 
-Then run the app in production mode:
+## Tech Stack
 
-```sh
-npm start
+- [Remix](https://remix.run/)
+- [Vite](https://vitejs.dev/)
+- [DuckDB-WASM](https://duckdb.org/docs/api/wasm/overview)
+- [Recharts](https://recharts.org/)
+- [Tailwind CSS](https://tailwindcss.com/)
+
+## Development
+
+```bash
+# Install dependencies
+npm install
+
+# Start development server
+npm run dev
 ```
-
-Now you'll need to pick a host to deploy it to.
-
-### DIY
-
-If you're familiar with deploying Node applications, the built-in Remix app server is production-ready.
-
-Make sure to deploy the output of `npm run build`
-
-- `build/server`
-- `build/client`
-
-## Styling
-
-This template comes with [Tailwind CSS](https://tailwindcss.com/) already configured for a simple default starting experience. You can use whatever css framework you prefer. See the [Vite docs on css](https://vitejs.dev/guide/features.html#css) for more information.
