@@ -19,13 +19,32 @@ export function clientLoader() {
   };
 }
 
-// クエリ結果の型をチェックしてBigIntを文字列に変換する関数
+// クエリ結果の型をチェックしてBigIntを文字列に変換する
 const formatValue = (value: any): string => {
   if (typeof value === "bigint") {
-    return value.toString(); // BigIntを文字列に変換
+    return value.toString();
   }
-  return value !== null && value !== undefined ? value.toString() : "-"; // null/undefinedも対処
+  return value !== null && value !== undefined ? value.toString() : "-";
 };
+
+interface PerformanceAnalysis {
+  request: string;
+  total_requests: bigint;
+  avg_time: number;
+  max_time: number;
+  min_time: number;
+  p95_time: number;
+  p99_time: number;
+  total_time: number;
+  original_patterns: string[]; // 追加
+}
+
+// 型定義を追加
+interface StatusCodeAnalysis {
+  request: string;
+  status: number;
+  count: bigint;
+}
 
 export default function Index() {
   const { initializeDuckDB } = clientLoader();
@@ -39,11 +58,10 @@ export default function Index() {
     });
   }, []);
 
-  const [queryResult, setQueryResult] = useState<any[]>([]);
-  const [statusCodeStats, setStatusCodeStats] = useState<any[]>([]);
-  const [requestTimeStats, setRequestTimeStats] = useState<any | null>(null);
+  const [statusCodeStats, setStatusCodeStats] = useState<StatusCodeAnalysis[]>([]);
   const [tableSchema, setTableSchema] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [performanceAnalysis, setPerformanceAnalysis] = useState<PerformanceAnalysis[]>([]);
 
   // ファイルアップロード処理
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -65,42 +83,74 @@ export default function Index() {
         return;
       }
 
-      // DuckDBにバッファを登録
       await db.registerFileBuffer(file.name, new Uint8Array(buffer));
 
       // テーブルの作成とデータの読み込み
       await conn.query(`DROP TABLE IF EXISTS logs`);
       await conn.query(`CREATE TABLE logs AS SELECT * FROM read_json_auto('${file.name}')`);
 
+      // 正規化ログのビューを作成
+      await conn.query(`
+        DROP VIEW IF EXISTS normalized_logs;
+        CREATE VIEW normalized_logs AS
+        WITH query_normalized AS (
+          SELECT 
+            *,
+            -- クエリパラメータを正規化
+            REGEXP_REPLACE(request, '([?&][^=]+)=[^&?]*', '\\1=:param', 'g') as with_normalized_params
+          FROM logs
+        )
+        SELECT 
+          *,
+          -- パスパラメータとUUIDを正規化
+          REGEXP_REPLACE(
+            REGEXP_REPLACE(
+              REGEXP_REPLACE(with_normalized_params, '/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(/|$)', '/:uuid\\1', 'g'),
+              '/[0-9]+(/|$)', 
+              '/:id\\1',
+              'g'
+            ),
+            '/[0-9]+([?&]|$)',
+            '/:id\\1',
+            'g'
+          ) AS normalized_request
+        FROM query_normalized
+      `);
+
       // スキーマ取得
       const schema = await conn.query(`PRAGMA table_info('logs')`);
       setTableSchema(schema.toArray());
 
-      // クエリ1: トップリクエストランキング
-      const topRequests = await conn.query(`
-        SELECT request, COUNT(*) AS hits
-        FROM logs
-        GROUP BY request
-        ORDER BY hits DESC
-        LIMIT 10;
-      `);
-      setQueryResult(topRequests.toArray());
-
-      // クエリ2: ステータスコードの分布
+      // ステータスコードの分布（ビューを使用）
       const statusDistribution = await conn.query(`
-        SELECT status, COUNT(*) AS count
-        FROM logs
-        GROUP BY status
-        ORDER BY status;
+        SELECT 
+          normalized_request as request,
+          status,
+          COUNT(*) AS count
+        FROM normalized_logs
+        GROUP BY 1, 2
+        ORDER BY 1, 2
       `);
       setStatusCodeStats(statusDistribution.toArray());
 
-      // クエリ3: リクエスト時間の平均と分散
-      const timeStats = await conn.query(`
-        SELECT AVG(request_time) AS avg_time, VAR_POP(request_time) AS var_time
-        FROM logs;
+      // リクエスト分析（ビューを使用）
+      const requestAnalysis = await conn.query(`
+        SELECT 
+          normalized_request as request,
+          COUNT(*) as total_requests,
+          AVG(request_time) as avg_time,
+          MAX(request_time) as max_time,
+          MIN(request_time) as min_time,
+          PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY request_time) as p95_time,
+          PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY request_time) as p99_time,
+          SUM(request_time) as total_time,
+          ARRAY_AGG(request) FILTER (WHERE request != normalized_request) as original_patterns
+        FROM normalized_logs 
+        GROUP BY normalized_request 
+        ORDER BY total_time DESC
+        LIMIT 100
       `);
-      setRequestTimeStats(timeStats.toArray()[0]);
+      setPerformanceAnalysis(requestAnalysis.toArray());
     } catch (error) {
       console.error("エラーが発生しました:", error);
       alert("JSONファイルが正しい形式か確認してください。");
@@ -121,59 +171,102 @@ export default function Index() {
         />
       </div>
       {loading && <p className="text-center text-blue-500">Loading...</p>}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div>
-          <h2 className="text-xl font-semibold mb-2">リクエストランキング</h2>
-          <ul className="list-disc ml-6">
-            {queryResult.map((row, index) => (
-              <li key={index}>
-                {row.request}: {formatValue(row.hits)} hits
-              </li>
-            ))}
-          </ul>
-        </div>
+      
+      <div className="grid grid-cols-1 gap-6">
         <div>
           <h2 className="text-xl font-semibold mb-2">ステータスコード分布</h2>
-          <ul className="list-disc ml-6">
-            {statusCodeStats.map((row, index) => (
-              <li key={index}>
-                ステータスコード {row.status}: {formatValue(row.count)} 件
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>
-      <div className="mt-6">
-        <h2 className="text-xl font-semibold mb-2">リクエスト時間の統計</h2>
-        {requestTimeStats && (
-          <p>
-            平均リクエスト時間: {formatValue(requestTimeStats.avg_time)} 秒<br />
-            分散: {formatValue(requestTimeStats.var_time)}
-          </p>
-        )}
-      </div>
-      <div className="mt-6">
-        <h2 className="text-xl font-semibold mb-2">テーブルスキーマ</h2>
-        <table className="table-auto border-collapse border border-gray-300 w-full">
-          <thead>
-            <tr>
-              <th className="border border-gray-300 px-4 py-2">列名</th>
-              <th className="border border-gray-300 px-4 py-2">型</th>
-              <th className="border border-gray-300 px-4 py-2">null可能</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tableSchema.map((row, index) => (
-              <tr key={index}>
-                <td className="border border-gray-300 px-4 py-2">{row.name}</td>
-                <td className="border border-gray-300 px-4 py-2">{row.type}</td>
+          <table className="table-auto border-collapse border border-gray-300 w-full">
+            <thead>
+              <tr>
+                <th className="border border-gray-300 px-4 py-2">正規化パス</th>
+                <th className="border border-gray-300 px-4 py-2">ステータスコード</th>
+                <th className="border border-gray-300 px-4 py-2">件数</th>
+              </tr>
+            </thead>
+            <tbody>
+              {statusCodeStats.map((row, index) => (
+                <tr key={index} className={row.status >= 400 ? "bg-red-100" : ""}>
+                  <td className="border border-gray-300 px-4 py-2">{row.request}</td>
+                  <td className="border border-gray-300 px-4 py-2">{formatValue(row.status)}</td>
+                  <td className="border border-gray-300 px-4 py-2">{formatValue(row.count)}</td>
+                </tr>
+              ))}
+              <tr className="font-bold bg-gray-100">
+                <td className="border border-gray-300 px-4 py-2">合計</td>
+                <td className="border border-gray-300 px-4 py-2">-</td>
                 <td className="border border-gray-300 px-4 py-2">
-                  {row.nullable ? "Yes" : "No"}
+                  {formatValue(statusCodeStats.reduce((sum, row) => sum + row.count, 0n))}
                 </td>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </tbody>
+          </table>
+        </div>
+        
+        <div>
+          <h2 className="text-xl font-semibold mb-2">リクエスト分析</h2>
+          <table className="table-auto border-collapse border border-gray-300 w-full">
+            <thead>
+              <tr>
+                <th className="border border-gray-300 px-4 py-2">正規化パス</th>
+                <th className="border border-gray-300 px-4 py-2">リクエスト数</th>
+                <th className="border border-gray-300 px-4 py-2">平均応答時間(s)</th>
+                <th className="border border-gray-300 px-4 py-2">P95応答時間(s)</th>
+                <th className="border border-gray-300 px-4 py-2">P99応答時間(s)</th>
+                <th className="border border-gray-300 px-4 py-2">合計時間(s)</th>
+                <th className="border border-gray-300 px-4 py-2">オリジナルパスの例</th>
+              </tr>
+            </thead>
+            <tbody>
+              {performanceAnalysis.map((row, index) => (
+                <tr key={index} className={row.avg_time > 0.1 ? "bg-red-100" : ""}>
+                  <td className="border border-gray-300 px-4 py-2">{row.request}</td>
+                  <td className="border border-gray-300 px-4 py-2">{formatValue(row.total_requests)}</td>
+                  <td className="border border-gray-300 px-4 py-2">{Number(row.avg_time).toFixed(3)}</td>
+                  <td className="border border-gray-300 px-4 py-2">{Number(row.p95_time).toFixed(3)}</td>
+                  <td className="border border-gray-300 px-4 py-2">{Number(row.p99_time).toFixed(3)}</td>
+                  <td className="border border-gray-300 px-4 py-2">{Number(row.total_time).toFixed(3)}</td>
+                  <td className="border border-gray-300 px-4 py-2 text-sm">
+                    {row.original_patterns && row.original_patterns.length > 0 ? (
+                      <details>
+                        <summary>例を表示</summary>
+                        <ul className="list-disc ml-4">
+                          {Array.from(new Set(row.original_patterns)).slice(0, 3).map((pattern, i) => (
+                            <li key={i}>{pattern}</li>
+                          ))}
+                          {row.original_patterns.length > 3 && <li>...</li>}
+                        </ul>
+                      </details>
+                    ) : "正規化なし"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        
+        <div>
+          <h2 className="text-xl font-semibold mb-2">テーブルスキーマ</h2>
+          <table className="table-auto border-collapse border border-gray-300 w-full">
+            <thead>
+              <tr>
+                <th className="border border-gray-300 px-4 py-2">列名</th>
+                <th className="border border-gray-300 px-4 py-2">型</th>
+                <th className="border border-gray-300 px-4 py-2">null可能</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tableSchema.map((row, index) => (
+                <tr key={index}>
+                  <td className="border border-gray-300 px-4 py-2">{row.name}</td>
+                  <td className="border border-gray-300 px-4 py-2">{row.type}</td>
+                  <td className="border border-gray-300 px-4 py-2">
+                    {row.nullable ? "Yes" : "No"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
