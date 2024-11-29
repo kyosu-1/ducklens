@@ -3,6 +3,7 @@ import * as duckdb from "@duckdb/duckdb-wasm";
 import duckdb_worker from "@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?worker";
 import duckdb_wasm from "@duckdb/duckdb-wasm/dist/duckdb-eh.wasm?url";
 import { AsyncDuckDB, AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell } from 'recharts';
 
 export function clientLoader() {
   return {
@@ -46,6 +47,16 @@ interface StatusCodeAnalysis {
   count: bigint;
 }
 
+// 型定義を更新
+interface StatusChartData {
+  request: string;
+  success: number;
+  redirect: number;
+  clientError: number;
+  serverError: number;
+  total: number;
+}
+
 export default function Index() {
   const { initializeDuckDB } = clientLoader();
   const [db, setDb] = useState<AsyncDuckDB | null>(null);
@@ -62,6 +73,7 @@ export default function Index() {
   const [tableSchema, setTableSchema] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [performanceAnalysis, setPerformanceAnalysis] = useState<PerformanceAnalysis[]>([]);
+  const [statusChartData, setStatusChartData] = useState<StatusChartData[]>([]);
 
   // ファイルアップロード処理
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -151,6 +163,27 @@ export default function Index() {
         LIMIT 100
       `);
       setPerformanceAnalysis(requestAnalysis.toArray());
+
+      // ステータスコードの集計クエリを更新
+      const statusChartAnalysis = await conn.query(`
+        WITH status_groups AS (
+          SELECT 
+            normalized_request as request,
+            CAST(COUNT(*) FILTER (WHERE status >= 200 AND status < 300) AS INTEGER) as success,
+            CAST(COUNT(*) FILTER (WHERE status >= 300 AND status < 400) AS INTEGER) as redirect,
+            CAST(COUNT(*) FILTER (WHERE status >= 400 AND status < 500) AS INTEGER) as client_error,
+            CAST(COUNT(*) FILTER (WHERE status >= 500) AS INTEGER) as server_error,
+            CAST(COUNT(*) AS INTEGER) as total
+          FROM normalized_logs
+          GROUP BY normalized_request
+          ORDER BY total DESC
+          LIMIT 10
+        )
+        SELECT *
+        FROM status_groups
+        WHERE total > 0
+      `);
+      setStatusChartData(statusChartAnalysis.toArray());
     } catch (error) {
       console.error("エラーが発生しました:", error);
       alert("JSONファイルが正しい形式か確認してください。");
@@ -173,6 +206,60 @@ export default function Index() {
       {loading && <p className="text-center text-blue-500">Loading...</p>}
       
       <div className="grid grid-cols-1 gap-6">
+        <div>
+          <h2 className="text-xl font-semibold mb-2">ステータスコード分布（グラフ）</h2>
+          <div className="overflow-x-auto">
+            <BarChart
+              width={1000}
+              height={400}
+              data={statusChartData}
+              margin={{
+                top: 20,
+                right: 30,
+                left: 20,
+                bottom: 100
+              }}
+            >
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis 
+                dataKey="request" 
+                angle={-45}
+                textAnchor="end"
+                height={80}
+              />
+              <YAxis />
+              <Tooltip 
+                formatter={(value: number, name: string) => {
+                  const labels = {
+                    success: '成功 (2xx)',
+                    redirect: 'リダイレクト (3xx)',
+                    clientError: 'クライアントエラー (4xx)',
+                    serverError: 'サーバーエラー (5xx)'
+                  };
+                  return [value, labels[name as keyof typeof labels]];
+                }}
+              />
+              <Legend 
+                formatter={(value: string) => {
+                  const labels = {
+                    success: '成功 (2xx)',
+                    redirect: 'リダイレクト (3xx)',
+                    clientError: 'クライアントエラー (4xx)',
+                    serverError: 'サーバーエラー (5xx)'
+                  };
+                  return labels[value as keyof typeof labels];
+                }}
+                verticalAlign="top"
+                height={36}
+              />
+              <Bar dataKey="success" stackId="a" fill="#4ade80" />
+              <Bar dataKey="redirect" stackId="a" fill="#facc15" />
+              <Bar dataKey="clientError" stackId="a" fill="#fb923c" />
+              <Bar dataKey="serverError" stackId="a" fill="#f87171" />
+            </BarChart>
+          </div>
+        </div>
+        
         <div>
           <h2 className="text-xl font-semibold mb-2">ステータスコード分布</h2>
           <table className="table-auto border-collapse border border-gray-300 w-full">
