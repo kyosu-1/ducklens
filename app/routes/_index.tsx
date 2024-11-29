@@ -20,7 +20,6 @@ export function clientLoader() {
   };
 }
 
-// クエリ結果の型をチェックしてBigIntを文字列に変換する
 const formatValue = (value: any): string => {
   if (typeof value === "bigint") {
     return value.toString();
@@ -40,14 +39,12 @@ interface PerformanceAnalysis {
   original_patterns: string[]; // 追加
 }
 
-// 型定義を追加
 interface StatusCodeAnalysis {
   request: string;
   status: number;
   count: bigint;
 }
 
-// 型定義を更新
 interface StatusChartData {
   request: string;
   success: number;
@@ -82,18 +79,14 @@ export default function Index() {
 
     setLoading(true);
     try {
-      // デモデータをフェッチ
       const response = await fetch('/data/test.json');
       const testData = await response.json();
 
-      // 以降は handleFileUpload と同じ処理を実行
       await db.registerFileBuffer('demo.json', new TextEncoder().encode(JSON.stringify(testData)));
 
-      // 以降は handleFileUpload と同じ処理を実行
       await conn.query(`DROP TABLE IF EXISTS logs`);
       await conn.query(`CREATE TABLE logs AS SELECT * FROM read_json_auto('demo.json')`);
 
-      // 正規化ログのビューを作成
       await conn.query(`
         DROP VIEW IF EXISTS normalized_logs;
         CREATE VIEW normalized_logs AS
@@ -119,7 +112,6 @@ export default function Index() {
         FROM query_normalized
       `);
 
-      // 以降の分析クエリを実行
       const schema = await conn.query(`PRAGMA table_info('logs')`);
       setTableSchema(schema.toArray());
 
@@ -201,11 +193,9 @@ export default function Index() {
 
       await db.registerFileBuffer(file.name, new Uint8Array(buffer));
 
-      // テーブルの作成とデータの読み込み
       await conn.query(`DROP TABLE IF EXISTS logs`);
       await conn.query(`CREATE TABLE logs AS SELECT * FROM read_json_auto('${file.name}')`);
 
-      // 正規化ログのビューを作成
       await conn.query(`
         DROP VIEW IF EXISTS normalized_logs;
         CREATE VIEW normalized_logs AS
@@ -233,11 +223,9 @@ export default function Index() {
         FROM query_normalized
       `);
 
-      // スキーマ取得
       const schema = await conn.query(`PRAGMA table_info('logs')`);
       setTableSchema(schema.toArray());
 
-      // ステータスコードの分布（ビュー���使用）
       const statusDistribution = await conn.query(`
         SELECT 
           normalized_request as request,
@@ -249,7 +237,6 @@ export default function Index() {
       `);
       setStatusCodeStats(statusDistribution.toArray());
 
-      // リクエスト分析（ビューを使用）
       const requestAnalysis = await conn.query(`
         SELECT 
           normalized_request as request,
